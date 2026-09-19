@@ -27,7 +27,7 @@
 </head>
 <body>
 <h1>W Shape Editor</h1>
-<p class="sub">Drag the red points. Snaps to 0.5 grid. Mirror keeps symmetry about z=2.5.</p>
+<p class="sub">Drag the red points. Double-click a point to delete it. Drag a midline point sideways to split off a new pair. Mirror keeps symmetry about z=2.5.</p>
 <div class="wrap">
   <div class="panel">
     <h2>2D outline — z (0..5) →, y (0..5) ↑</h2>
@@ -40,7 +40,13 @@
   <div class="panel controls">
     <h2>Controls</h2>
     <div class="row"><label class="chk"><input type="checkbox" id="mirror" checked> Mirror about z=2.5</label></div>
-    <div class="row"><label class="chk"><input type="checkbox" id="snap" checked> Snap to 0.5</label></div>
+    <div class="row"><label for="snapStep">Snap grid:</label>
+      <select id="snapStep">
+        <option value="0.5" selected>0.5</option>
+        <option value="0.25">0.25 (fine)</option>
+        <option value="0">off</option>
+      </select>
+    </div>
     <div class="row"><label class="chk"><input type="checkbox" id="labels"> Show vertex numbers</label></div>
     <div class="row">
       <button id="rCubic">Reset: cubic R_V6</button>
@@ -49,16 +55,17 @@
     <div class="row">
       <button id="exp" class="primary">Export JSON</button>
       <button id="cpy">Copy</button>
+      <button id="load">Load</button>
     </div>
-    <textarea id="out" readonly placeholder="Exported [[z,y],...] appears here — send it back to render in 3D."></textarea>
-    <div class="hint">Export, then send me the JSON and I'll render the full clay 3D.</div>
+    <textarea id="out" readonly placeholder="Exported [[z,y],...] appears here — send it to me, or paste one back and hit Load."></textarea>
+    <div class="hint">Export, then send me the JSON and I'll render the full clay 3D. Paste JSON back and hit Load to restore it.</div>
   </div>
 </div>
 <script>
 "use strict";
 // ---- data: [z,y] pairs ----
 const CUBIC = [[5,4],[5,5],[4,5],[4,4],[4,3],[4,2],[3,2],[3,3],[2,3],[2,2],[1,2],[1,3],[1,4],[1,5],[0,5],[0,4],[0,3],[0,2],[0,1],[1,1],[1,0],[2,0],[2,1],[3,1],[3,0],[4,0],[4,1],[5,1],[5,2],[5,3]];
-const SHAPED = [[3,1],[3,0.5],[3.5,0],[4,0.5],[4,1],[5,1],[5,2],[5,3],[5,4],[5,5],[4,5],[4,4],[4,3],[4,2],[3,2],[3,3],[2,3],[2,2],[1,2],[1,3],[1,4],[1,5],[0,5],[0,4],[0,3],[0,2],[0,1],[1,1],[1,0.5],[1.5,0],[2,0.5],[2,1]];
+const SHAPED = [[2.5,1],[3,0.5],[3.5,0.5],[4,0.5],[4.5,1],[5,1.5],[5,2],[5,3],[5,4],[5,5],[4,5],[4,4],[4,2],[3.5,1.5],[3,2],[2.5,2.5],[2,2],[1.5,1.5],[1,2],[1,4],[1,5],[0,5],[0,4],[0,3],[0,2],[0,1.5],[0.5,1],[1,0.5],[1.5,0.5],[2,0.5]];
 let poly = SHAPED.map(p => p.slice());
 
 const NS = 'http://www.w3.org/2000/svg';
@@ -71,15 +78,19 @@ const sy = y => Y0 - (y/5)*(Y0-Y1);
 const unx = x => Math.max(0, Math.min(5, ((x-X0)/(X1-X0))*5));
 const uny = y => Math.max(0, Math.min(5, ((Y0-y)/(Y0-Y1))*5));
 
-// ---- build static grid once ----
-(function grid(){
-  const g = document.createElementNS(NS,'g');
-  for(let i=0;i<=10;i++){
-    const v=i*0.5;
+// ---- grid (redrawn when snap density changes) ----
+let gridG=null;
+function drawGrid(){
+  if(gridG) ed.removeChild(gridG);
+  const step=snapStep()||0.5, n=Math.round(5/step);
+  const g=document.createElementNS(NS,'g');
+  for(let i=0;i<=n;i++){
+    const v=i*step;
+    const major=Math.abs(v*2-Math.round(v*2))<1e-9;
     for(const [a,b,c,d] of [[sx(v),Y1,sx(v),Y0],[X0,sy(v),X1,sy(v)]]){
       const l=document.createElementNS(NS,'line');
       l.setAttribute('x1',a);l.setAttribute('y1',b);l.setAttribute('x2',c);l.setAttribute('y2',d);
-      l.setAttribute('stroke', i%2===0 ? '#d8d2c4' : '#ece7da');l.setAttribute('stroke-width','1');
+      l.setAttribute('stroke', major ? '#d8d2c4' : '#ece7da');l.setAttribute('stroke-width','1');
       g.appendChild(l);
     }
   }
@@ -87,8 +98,10 @@ const uny = y => Math.max(0, Math.min(5, ((Y0-y)/(Y0-Y1))*5));
   cl.setAttribute('x1',sx(2.5));cl.setAttribute('y1',Y1);cl.setAttribute('x2',sx(2.5));cl.setAttribute('y2',Y0);
   cl.setAttribute('stroke','#d88');cl.setAttribute('stroke-dasharray','5,4');cl.setAttribute('stroke-width','1.5');
   g.appendChild(cl);
-  ed.appendChild(g);
-})();
+  ed.insertBefore(g, ed.firstChild);
+  gridG=g;
+}
+drawGrid();
 
 const dyn = document.createElementNS(NS,'g'); ed.appendChild(dyn);
 const pgon = document.createElementNS(NS,'polygon');
@@ -123,8 +136,9 @@ function render2D(){
 }
 
 // ---- drag ----
-let dragI=-1, partner=-1;
-function snapV(v){ return document.getElementById('snap').checked ? Math.round(v*2)/2 : Math.round(v*100)/100; }
+let dragI=-1, partner=-1, startedOnMid=false, splitDone=false;
+function snapStep(){ return parseFloat(document.getElementById('snapStep').value); }
+function snapV(v){ const s=snapStep(); return s>0 ? Math.round(v/s)*s : Math.round(v*100)/100; }
 function findPartner(i){
   const p=poly[i], mz=5-p[0];
   if(Math.abs(p[0]-2.5)<1e-9) return -1;
@@ -145,7 +159,10 @@ ed.addEventListener('pointerdown', e=>{
   const t=e.target;
   if(t.tagName==='circle' && t.dataset.i!==undefined){
     dragI=parseInt(t.dataset.i);
-    partner=document.getElementById('mirror').checked?findPartner(dragI):-1;
+    const mirOn=document.getElementById('mirror').checked;
+    partner=mirOn?findPartner(dragI):-1;
+    startedOnMid=mirOn && Math.abs(poly[dragI][0]-2.5)<1e-9;
+    splitDone=false;
     t.setPointerCapture(e.pointerId);
     e.preventDefault();
   }
@@ -155,12 +172,49 @@ ed.addEventListener('pointermove', e=>{
   const loc=toSVG(e);
   let z=snapV(unx(loc.x)), y=snapV(uny(loc.y));
   const mirOn=document.getElementById('mirror').checked;
-  if(mirOn && Math.abs(poly[dragI][0]-2.5)<1e-9) z=2.5; // lock centerline
-  poly[dragI]=[z,y];
-  if(mirOn && partner>=0) poly[partner]=[snapV(5-z), y];
+  if(mirOn && startedOnMid && !splitDone){
+    if(Math.abs(z-2.5)>1e-9){
+      // pulled off the midline: the mid point stays, a new mirrored pair is born at the cursor
+      const m=dragI;
+      poly.splice(m+1,0,[z,y],[snapV(5-z),y]);
+      dragI=m+1; partner=m+2; splitDone=true; startedOnMid=false;
+    }else{
+      z=2.5; // still locked to the midline
+      poly[dragI]=[z,y];
+    }
+  }else{
+    poly[dragI]=[z,y];
+    if(mirOn && partner>=0) poly[partner]=[snapV(5-z),y];
+  }
   render2D(); render3D();
 });
-['pointerup','pointercancel'].forEach(ev=>ed.addEventListener(ev,()=>{dragI=-1;partner=-1;}));
+function mergeCoincident(){
+  // points that joined (e.g. on the midline) collapse into one
+  const out=[];
+  for(const p of poly){
+    if(!out.some(q=>Math.abs(q[0]-p[0])<1e-9 && Math.abs(q[1]-p[1])<1e-9)) out.push(p);
+  }
+  if(out.length>=3) poly=out;
+}
+['pointerup','pointercancel'].forEach(ev=>ed.addEventListener(ev,()=>{
+  if(dragI>=0){ mergeCoincident(); render2D(); render3D(); }
+  dragI=-1;partner=-1;startedOnMid=false;splitDone=false;
+}));
+// double-click a handle to delete it (and its mirror partner, if any)
+ed.addEventListener('dblclick', e=>{
+  const t=e.target;
+  if(t.tagName==='circle' && t.dataset.i!==undefined){
+    const i=parseInt(t.dataset.i);
+    const mirOn=document.getElementById('mirror').checked;
+    const p=mirOn?findPartner(i):-1;
+    const kill=[i]; if(p>=0) kill.push(p);
+    if(poly.length-kill.length<3) return;
+    kill.sort((a,b)=>b-a).forEach(k=>poly.splice(k,1));
+    dragI=-1;partner=-1;
+    render2D();render3D();
+  }
+  e.preventDefault();
+});
 
 // ---- 3D iso preview ----
 function render3D(){
@@ -205,6 +259,16 @@ document.getElementById('cpy').onclick=()=>{
   const t=document.getElementById('out'); t.select();
   (navigator.clipboard?navigator.clipboard.writeText(t.value):Promise.reject()).catch(()=>document.execCommand('copy'));
 };
+document.getElementById('load').onclick=()=>{
+  let v; try{ v=JSON.parse(document.getElementById('out').value); }catch(err){ v=null; }
+  if(v && !Array.isArray(v) && Array.isArray(v.points)) v=v.points; // accept {"points":[...]} too
+  if(!Array.isArray(v)||v.length<3||!v.every(p=>Array.isArray(p)&&p.length===2&&p.every(n=>typeof n==='number'&&isFinite(n)))){
+    alert('Load needs JSON like [[z,y],[z,y],...] pasted in the text box.'); return;
+  }
+  poly=v.map(p=>[Math.max(0,Math.min(5,p[0])),Math.max(0,Math.min(5,p[1]))]);
+  mergeCoincident(); render2D(); render3D();
+};
+document.getElementById('snapStep').onchange=drawGrid;
 
 render2D(); render3D();
 </script>
