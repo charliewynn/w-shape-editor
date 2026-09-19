@@ -43,7 +43,7 @@ Drag the red points. Double-click a point to delete it. Drag a midline point sid
     <svg id="ed" width="360" height="360" viewBox="0 0 360 360"></svg>
   </div>
   <div class="panel">
-    <h2>3D — all three faces together</h2>
+    <h2>3D — union solid (thickness applied)</h2>
     <svg id="pv" width="360" height="360" viewBox="0 0 360 360"></svg>
   </div>
   <div class="panel controls">
@@ -57,6 +57,12 @@ Drag the red points. Double-click a point to delete it. Drag a midline point sid
       </select>
     </div>
     <div class="row"><label class="chk"><input type="checkbox" id="labels"> Show vertex numbers</label></div>
+    <div class="row">
+      <label for="thickness">Face thickness:</label>
+      <input type="range" id="thickness" min="0.25" max="5" step="0.25" value="1" style="flex:1">
+      <span id="thickVal">1</span>
+    </div>
+    <div class="hint">One thickness for all three faces. The app unions them into a single solid (no interior faces).</div>
     <div class="row" id="resetRow">
       <button id="rCubic">Reset: cubic</button>
       <button id="rShaped">Reset: shaped</button>
@@ -66,10 +72,14 @@ Drag the red points. Double-click a point to delete it. Drag a midline point sid
       <button id="cpy">Copy</button>
       <button id="load">Load</button>
     </div>
-    <textarea id="out" placeholder="Exported {w:.., t:.., c:..} appears here — send it to me, or paste one back and hit Load."></textarea>
+    <div class="row">
+      <button id="stl" class="primary">Export STL</button>
+    </div>
+    <textarea id="out" placeholder="Exported {w:.., t:.., c:.., thickness:..} appears here — send it to me, or paste one back and hit Load."></textarea>
     <div class="hint">Export sends all three faces. I'll render the full clay 3D from it. Paste a previous export back and hit Load to restore.</div>
   </div>
 </div>
+<script src="solid.js"></script>
 <script>
 "use strict";
 // ---- face definitions ----
@@ -263,40 +273,54 @@ ed.addEventListener('dblclick', e=>{
   e.preventDefault();
 });
 
-// ---- 3D preview: all three faces ----
-// Each face is drawn as a flat polygon at its cube plane:
-//   W at x=5 (poly in (z,y)), T at z=5 (poly in (x,y)), C at y=5 (poly in (x,z)).
+// ---- 3D preview: union solid ----
+// Builds the exact union of the three thickened faces via solid.js,
+// projects the triangles isometrically, and draws them back-to-front.
 const COS30=Math.cos(Math.PI/6), SIN30=Math.sin(Math.PI/6);
-const SH_Y='#d9a276', SH_Z='#c08355', SH_X='#9a653c';
-function to3(p, kind){
-  if(kind==='w') return [5, p[1], p[0]];
-  if(kind==='t') return [p[0], p[1], 5];
-  return [p[0], 5, p[1]];
-}
+function thicknessVal(){ return parseFloat(document.getElementById('thickness').value); }
 function render3D(){
   while(pv.firstChild) pv.removeChild(pv.firstChild);
   const cx=180, cy=195, s=34;
   // SVG y-down: py = cy - (y - (x+z)*SIN30) * s
   const P3=(x,y,z)=>[cx+(x-z)*COS30*s, cy-(y-(x+z)*SIN30)*s];
-  const faces=[
-    { pts:FACES.w.poly.map(p=>to3(p,'w')), fill:SH_X },
-    { pts:FACES.t.poly.map(p=>to3(p,'t')), fill:SH_Z },
-    { pts:FACES.c.poly.map(p=>to3(p,'c')), fill:SH_Y },
-  ];
-  // far (small x+y+z) first; top face last so shared edges read cleanly
-  const rank=f=>f.fill===SH_Y?1:0;
-  faces.sort((a,b)=>{
-    const da=a.pts.reduce((t,p)=>t+p[0]+p[1]+p[2],0)/a.pts.length;
-    const db=b.pts.reduce((t,p)=>t+p[0]+p[1]+p[2],0)/b.pts.length;
-    return (da-db) || (rank(a)-rank(b));
+  let tris=[];
+  try {
+    tris = buildSolid(FACES.w.poly, FACES.t.poly, FACES.c.poly, thicknessVal());
+  } catch(err) {
+    const t=document.createElementNS(NS,'text');
+    t.setAttribute('x',cx); t.setAttribute('y',cy);
+    t.setAttribute('text-anchor','middle'); t.setAttribute('fill','#a00');
+    t.textContent='solid error: '+err.message;
+    pv.appendChild(t);
+    return;
+  }
+  // simple lambert-ish shade from face normal, then depth sort
+  const items=tris.map(tr=>{
+    const e1=[tr[1][0]-tr[0][0],tr[1][1]-tr[0][1],tr[1][2]-tr[0][2]];
+    const e2=[tr[2][0]-tr[0][0],tr[2][1]-tr[0][1],tr[2][2]-tr[0][2]];
+    let nx=e1[1]*e2[2]-e1[2]*e2[1], ny=e1[2]*e2[0]-e1[0]*e2[2], nz=e1[0]*e2[1]-e1[1]*e2[0];
+    const l=Math.hypot(nx,ny,nz)||1; nx/=l; ny/=l; nz/=l;
+    // light from upper-left-front
+    const li=Math.max(0, (-nx*0.5+ny*0.7-nz*0.5));
+    const base=[198,142,95]; // clay
+    const shade=0.55+0.45*li;
+    const fill=`rgb(${Math.round(base[0]*shade)},${Math.round(base[1]*shade)},${Math.round(base[2]*shade)})`;
+    const depth=(tr[0][0]+tr[1][0]+tr[2][0]+tr[0][1]+tr[1][1]+tr[2][1]+tr[0][2]+tr[1][2]+tr[2][2])/3;
+    return {tr, fill, depth};
   });
-  for(const f of faces){
+  items.sort((a,b)=>b.depth-a.depth); // far first
+  for(const it of items){
     const el=document.createElementNS(NS,'polygon');
-    el.setAttribute('points', f.pts.map(p=>{const q=P3(p[0],p[1],p[2]); return q[0].toFixed(1)+','+q[1].toFixed(1);}).join(' '));
-    el.setAttribute('fill', f.fill);
-    el.setAttribute('stroke','#8B5E3C'); el.setAttribute('stroke-width','1.4');
+    el.setAttribute('points', it.tr.map(p=>{const q=P3(p[0],p[1],p[2]); return q[0].toFixed(1)+','+q[1].toFixed(1);}).join(' '));
+    el.setAttribute('fill', it.fill);
+    el.setAttribute('stroke','#8B5E3C'); el.setAttribute('stroke-width','0.3');
     pv.appendChild(el);
   }
+  // facet count label
+  const lab=document.createElementNS(NS,'text');
+  lab.setAttribute('x',12); lab.setAttribute('y',20); lab.setAttribute('fill','#888'); lab.setAttribute('font-size','11');
+  lab.textContent=tris.length+' facets · t='+thicknessVal();
+  pv.appendChild(lab);
 }
 
 // ---- buttons ----
@@ -304,9 +328,13 @@ document.getElementById('rCubic').onclick=()=>{face().poly=face().cubic.map(p=>p
 document.getElementById('rShaped').onclick=()=>{if(face().shaped){face().poly=face().shaped.map(p=>p.slice());render2D();render3D();}};
 document.getElementById('labels').onchange=render2D;
 document.getElementById('mirror').onchange=()=>{drawGrid();};
+document.getElementById('thickness').oninput=e=>{
+  document.getElementById('thickVal').textContent=e.target.value;
+  render3D();
+};
 const rnd2 = v => Math.round(v*100)/100;
 document.getElementById('exp').onclick=()=>{
-  const o={};
+  const o={ thickness: thicknessVal() };
   for(const id of ['w','t','c']) o[id]=FACES[id].poly.map(p=>[rnd2(p[0]),rnd2(p[1])]);
   document.getElementById('out').value=JSON.stringify(o);
 };
@@ -323,6 +351,11 @@ document.getElementById('load').onclick=()=>{
       if(okArr(v[id])){ FACES[id].poly=v[id].map(p=>[Math.max(0,Math.min(5,p[0])),Math.max(0,Math.min(5,p[1]))]); mergeInto(id); any=true; }
     }
     if(!any){ alert('Load needs {"w":[[..],..],"t":[[..],..],"c":[[..],..]} or a bare [[h,v],..] array.'); return; }
+    if(typeof v.thickness==='number' && isFinite(v.thickness)){
+      const th=document.getElementById('thickness');
+      th.value=Math.max(parseFloat(th.min), Math.min(parseFloat(th.max), v.thickness));
+      document.getElementById('thickVal').textContent=th.value;
+    }
   } else if(okArr(v)){
     face().poly=v.map(p=>[Math.max(0,Math.min(5,p[0])),Math.max(0,Math.min(5,p[1]))]);
     mergeCoincident();
@@ -330,6 +363,20 @@ document.getElementById('load').onclick=()=>{
     alert('Load needs {"w":..,"t":..,"c":..} or [[h,v],[h,v],..] pasted in the text box.'); return;
   }
   render2D(); render3D();
+};
+document.getElementById('stl').onclick=()=>{
+  let tris;
+  try {
+    tris=buildSolid(FACES.w.poly, FACES.t.poly, FACES.c.poly, thicknessVal());
+  } catch(err){ alert('Solid error: '+err.message); return; }
+  if(!tris.length){ alert('No solid to export.'); return; }
+  const buf=stlBinary(tris);
+  const blob=new Blob([buf],{type:'model/stl'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='ctw-solid-t'+thicknessVal()+'.stl';
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 500);
 };
 function mergeInto(id){
   const P=FACES[id].poly, out=[];
