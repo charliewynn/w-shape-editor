@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>W Shape Editor</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #f5f0e8; color: #333; padding: 12px; }
+  h1 { font-size: 18px; margin-bottom: 2px; }
+  p.sub { font-size: 13px; color: #666; margin-bottom: 10px; }
+  .wrap { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
+  .panel { background: #fff; border-radius: 8px; padding: 10px; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+  .panel h2 { font-size: 14px; margin-bottom: 6px; }
+  svg { display: block; touch-action: none; user-select: none; -webkit-user-select: none; }
+  .controls { display: flex; flex-direction: column; gap: 8px; min-width: 220px; max-width: 300px; }
+  .row { display: flex; align-items: center; gap: 8px; font-size: 13px; flex-wrap: wrap; }
+  button { padding: 9px 12px; border: 1px solid #ccc; border-radius: 6px; background: #fff; cursor: pointer; font-size: 13px; }
+  button:active { background: #e8e8e8; }
+  button.primary { background: #8B5E3C; color: #fff; border-color: #8B5E3C; }
+  label.chk { display: flex; align-items: center; gap: 7px; cursor: pointer; padding: 4px 0; }
+  input[type=checkbox] { width: 18px; height: 18px; }
+  textarea { width: 100%; height: 110px; font-family: monospace; font-size: 10px; padding: 8px; border: 1px solid #ccc; border-radius: 6px; }
+  .hint { font-size: 12px; color: #888; }
+  .vlabel { font-size: 9px; fill: #666; pointer-events: none; }
+</style>
+</head>
+<body>
+<h1>W Shape Editor</h1>
+<p class="sub">Drag the red points. Snaps to 0.5 grid. Mirror keeps symmetry about z=2.5.</p>
+<div class="wrap">
+  <div class="panel">
+    <h2>2D outline — z (0..5) →, y (0..5) ↑</h2>
+    <svg id="ed" width="360" height="360" viewBox="0 0 360 360"></svg>
+  </div>
+  <div class="panel">
+    <h2>3D preview (approximate iso)</h2>
+    <svg id="pv" width="360" height="360" viewBox="0 0 360 360"></svg>
+  </div>
+  <div class="panel controls">
+    <h2>Controls</h2>
+    <div class="row"><label class="chk"><input type="checkbox" id="mirror" checked> Mirror about z=2.5</label></div>
+    <div class="row"><label class="chk"><input type="checkbox" id="snap" checked> Snap to 0.5</label></div>
+    <div class="row"><label class="chk"><input type="checkbox" id="labels"> Show vertex numbers</label></div>
+    <div class="row">
+      <button id="rCubic">Reset: cubic R_V6</button>
+      <button id="rShaped">Reset: 45° shaped</button>
+    </div>
+    <div class="row">
+      <button id="exp" class="primary">Export JSON</button>
+      <button id="cpy">Copy</button>
+    </div>
+    <textarea id="out" readonly placeholder="Exported [[z,y],...] appears here — send it back to render in 3D."></textarea>
+    <div class="hint">Export, then send me the JSON and I'll render the full clay 3D.</div>
+  </div>
+</div>
+<script>
+"use strict";
+// ---- data: [z,y] pairs ----
+const CUBIC = [[5,4],[5,5],[4,5],[4,4],[4,3],[4,2],[3,2],[3,3],[2,3],[2,2],[1,2],[1,3],[1,4],[1,5],[0,5],[0,4],[0,3],[0,2],[0,1],[1,1],[1,0],[2,0],[2,1],[3,1],[3,0],[4,0],[4,1],[5,1],[5,2],[5,3]];
+const SHAPED = [[3,1],[3,0.5],[3.5,0],[4,0.5],[4,1],[5,1],[5,2],[5,3],[5,4],[5,5],[4,5],[4,4],[4,3],[4,2],[3,2],[3,3],[2,3],[2,2],[1,2],[1,3],[1,4],[1,5],[0,5],[0,4],[0,3],[0,2],[0,1],[1,1],[1,0.5],[1.5,0],[2,0.5],[2,1]];
+let poly = SHAPED.map(p => p.slice());
+
+const NS = 'http://www.w3.org/2000/svg';
+const ed = document.getElementById('ed');
+const pv = document.getElementById('pv');
+// 2D editor mapping: z 0..5 -> x 30..330 ; y 0..5 -> y 330..30 (y up)
+const X0=30, X1=330, Y0=330, Y1=30;
+const sx = z => X0 + (z/5)*(X1-X0);
+const sy = y => Y0 - (y/5)*(Y0-Y1);
+const unx = x => Math.max(0, Math.min(5, ((x-X0)/(X1-X0))*5));
+const uny = y => Math.max(0, Math.min(5, ((Y0-y)/(Y0-Y1))*5));
+
+// ---- build static grid once ----
+(function grid(){
+  const g = document.createElementNS(NS,'g');
+  for(let i=0;i<=10;i++){
+    const v=i*0.5;
+    for(const [a,b,c,d] of [[sx(v),Y1,sx(v),Y0],[X0,sy(v),X1,sy(v)]]){
+      const l=document.createElementNS(NS,'line');
+      l.setAttribute('x1',a);l.setAttribute('y1',b);l.setAttribute('x2',c);l.setAttribute('y2',d);
+      l.setAttribute('stroke', i%2===0 ? '#d8d2c4' : '#ece7da');l.setAttribute('stroke-width','1');
+      g.appendChild(l);
+    }
+  }
+  const cl=document.createElementNS(NS,'line');
+  cl.setAttribute('x1',sx(2.5));cl.setAttribute('y1',Y1);cl.setAttribute('x2',sx(2.5));cl.setAttribute('y2',Y0);
+  cl.setAttribute('stroke','#d88');cl.setAttribute('stroke-dasharray','5,4');cl.setAttribute('stroke-width','1.5');
+  g.appendChild(cl);
+  ed.appendChild(g);
+})();
+
+const dyn = document.createElementNS(NS,'g'); ed.appendChild(dyn);
+const pgon = document.createElementNS(NS,'polygon');
+pgon.setAttribute('fill','#C68E5F'); pgon.setAttribute('fill-opacity','0.75');
+pgon.setAttribute('stroke','#8B5E3C'); pgon.setAttribute('stroke-width','2');
+dyn.appendChild(pgon);
+let handles=[], vlabels=[];
+
+function render2D(){
+  pgon.setAttribute('points', poly.map(p=>sx(p[0])+','+sy(p[1])).join(' '));
+  // sync handles
+  while(handles.length < poly.length){
+    const c=document.createElementNS(NS,'circle');
+    c.setAttribute('r','9'); c.setAttribute('fill','#d33');
+    c.setAttribute('stroke','#fff'); c.setAttribute('stroke-width','2');
+    c.style.cursor='grab';
+    dyn.appendChild(c); handles.push(c);
+    const t=document.createElementNS(NS,'text');
+    t.setAttribute('class','vlabel'); t.setAttribute('text-anchor','middle');
+    t.style.display='none'; dyn.appendChild(t); vlabels.push(t);
+  }
+  while(handles.length > poly.length){
+    dyn.removeChild(handles.pop()); dyn.removeChild(vlabels.pop());
+  }
+  const showL = document.getElementById('labels').checked;
+  poly.forEach((p,i)=>{
+    handles[i].setAttribute('cx',sx(p[0])); handles[i].setAttribute('cy',sy(p[1]));
+    handles[i].dataset.i=i;
+    vlabels[i].setAttribute('x',sx(p[0])); vlabels[i].setAttribute('y',sy(p[1])-13);
+    vlabels[i].textContent=i; vlabels[i].style.display=showL?'block':'none';
+  });
+}
+
+// ---- drag ----
+let dragI=-1, partner=-1;
+function snapV(v){ return document.getElementById('snap').checked ? Math.round(v*2)/2 : Math.round(v*100)/100; }
+function findPartner(i){
+  const p=poly[i], mz=5-p[0];
+  if(Math.abs(p[0]-2.5)<1e-9) return -1;
+  let best=-1,bd=1e9;
+  for(let j=0;j<poly.length;j++){ if(j===i) continue;
+    const d=Math.abs(poly[j][0]-mz)+Math.abs(poly[j][1]-p[1]);
+    if(d<bd){bd=d;best=j;}
+  }
+  return bd<0.26?best:-1; // only if a real symmetric partner exists
+}
+function toSVG(e){
+  const pt=ed.createSVGPoint(); pt.x=e.clientX; pt.y=e.clientY;
+  return pt.matrixTransform(ed.getScreenCTM().inverse());
+}
+handles0attach();
+function handles0attach(){ /* handles created in render2D; attach via delegation */ }
+ed.addEventListener('pointerdown', e=>{
+  const t=e.target;
+  if(t.tagName==='circle' && t.dataset.i!==undefined){
+    dragI=parseInt(t.dataset.i);
+    partner=document.getElementById('mirror').checked?findPartner(dragI):-1;
+    t.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  }
+});
+ed.addEventListener('pointermove', e=>{
+  if(dragI<0) return;
+  const loc=toSVG(e);
+  let z=snapV(unx(loc.x)), y=snapV(uny(loc.y));
+  const mirOn=document.getElementById('mirror').checked;
+  if(mirOn && Math.abs(poly[dragI][0]-2.5)<1e-9) z=2.5; // lock centerline
+  poly[dragI]=[z,y];
+  if(mirOn && partner>=0) poly[partner]=[snapV(5-z), y];
+  render2D(); render3D();
+});
+['pointerup','pointercancel'].forEach(ev=>ed.addEventListener(ev,()=>{dragI=-1;partner=-1;}));
+
+// ---- 3D iso preview ----
+function render3D(){
+  while(pv.firstChild) pv.removeChild(pv.firstChild);
+  const cx=180, cy=190, s=34, c30=Math.cos(Math.PI/6), s30=Math.sin(Math.PI/6);
+  const P=(x,y,z)=>[cx+(z-2.5)*c30*s-(x-4.5)*c30*s, cy-(y-2.5)*s+((z-2.5)+(x-4.5))*s30*s*0.9];
+  const x0=4,x1=5,n=poly.length;
+  // side quads with painter sort (by avg x+y+z ascending -> draw far first)
+  const quads=[];
+  for(let i=0;i<n;i++){
+    const j=(i+1)%n, a=poly[i], b=poly[j];
+    const depth=(x0+a[1]+a[0]+x0+b[1]+b[0]+x1+b[1]+b[0]+x1+a[1]+a[0])/4;
+    quads.push({a,b,depth});
+  }
+  quads.sort((p,q)=>p.depth-q.depth);
+  for(const q of quads){
+    const p1=P(x0,q.a[1],q.a[0]),p2=P(x0,q.b[1],q.b[0]),p3=P(x1,q.b[1],q.b[0]),p4=P(x1,q.a[1],q.a[0]);
+    const el=document.createElementNS(NS,'polygon');
+    el.setAttribute('points',`${p1[0]},${p1[1]} ${p2[0]},${p2[1]} ${p3[0]},${p3[1]} ${p4[0]},${p4[1]}`);
+    // shade by edge direction: more vertical-in-z -> darker
+    const dz=Math.abs(q.b[0]-q.a[0]), dy=Math.abs(q.b[1]-q.a[1]);
+    const t=dz+dy>0?dz/(dz+dy):0.5;
+    const base=Math.round(150+40*(0.5-t));
+    el.setAttribute('fill',`rgb(${base+25},${base-15},${base-55})`);
+    el.setAttribute('stroke','#8B5E3C'); el.setAttribute('stroke-width','0.7');
+    pv.appendChild(el);
+  }
+  const fc=document.createElementNS(NS,'polygon');
+  fc.setAttribute('points',poly.map(p=>{const q=P(x1,p[1],p[0]);return q[0]+','+q[1];}).join(' '));
+  fc.setAttribute('fill','#D8A066'); fc.setAttribute('stroke','#8B5E3C'); fc.setAttribute('stroke-width','1.2');
+  pv.appendChild(fc);
+}
+
+// ---- buttons ----
+document.getElementById('rCubic').onclick=()=>{poly=CUBIC.map(p=>p.slice());render2D();render3D();};
+document.getElementById('rShaped').onclick=()=>{poly=SHAPED.map(p=>p.slice());render2D();render3D();};
+document.getElementById('labels').onchange=render2D;
+document.getElementById('exp').onclick=()=>{
+  document.getElementById('out').value=JSON.stringify(poly.map(p=>[Math.round(p[0]*100)/100,Math.round(p[1]*100)/100]));
+};
+document.getElementById('cpy').onclick=()=>{
+  const t=document.getElementById('out'); t.select();
+  (navigator.clipboard?navigator.clipboard.writeText(t.value):Promise.reject()).catch(()=>document.execCommand('copy'));
+};
+
+render2D(); render3D();
+</script>
+</body>
+</html>
