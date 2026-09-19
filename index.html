@@ -3,12 +3,15 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>W Shape Editor</title>
+<title>CTW Face Editor</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: system-ui, -apple-system, sans-serif; background: #f5f0e8; color: #333; padding: 12px; }
   h1 { font-size: 18px; margin-bottom: 2px; }
-  p.sub { font-size: 13px; color: #666; margin-bottom: 10px; }
+  p.sub { font-size: 13px; color: #666; margin-bottom: 10px; max-width: 720px; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  .tabs button { padding: 10px 22px; font-size: 15px; font-weight: 600; border: 1px solid #ccc; border-radius: 8px 8px 0 0; background: #e8e2d4; cursor: pointer; border-bottom: none; }
+  .tabs button.active { background: #fff; color: #8B5E3C; }
   .wrap { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
   .panel { background: #fff; border-radius: 8px; padding: 10px; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
   .panel h2 { font-size: 14px; margin-bottom: 6px; }
@@ -26,20 +29,26 @@
 </style>
 </head>
 <body>
-<h1>W Shape Editor</h1>
-<p class="sub">Drag the red points. Double-click a point to delete it. Drag a midline point sideways to split off a new pair. Mirror keeps symmetry about z=2.5.</p>
+<h1>CTW Face Editor</h1>
+<p class="sub">Shape each face of the CTW cube. <b>W</b> = right face, <b>T</b> = front face, <b>C</b> = top face.
+Drag the red points. Double-click a point to delete it. Drag a midline point sideways to split off a new pair.</p>
+<div class="tabs">
+  <button id="tab-w" class="active">W</button>
+  <button id="tab-t">T</button>
+  <button id="tab-c">C</button>
+</div>
 <div class="wrap">
   <div class="panel">
-    <h2>2D outline — z (0..5) →, y (0..5) ↑</h2>
+    <h2 id="edTitle">W — 2D outline</h2>
     <svg id="ed" width="360" height="360" viewBox="0 0 360 360"></svg>
   </div>
   <div class="panel">
-    <h2>3D preview (approximate iso)</h2>
+    <h2>3D — all three faces together</h2>
     <svg id="pv" width="360" height="360" viewBox="0 0 360 360"></svg>
   </div>
   <div class="panel controls">
     <h2>Controls</h2>
-    <div class="row"><label class="chk"><input type="checkbox" id="mirror" checked> Mirror about z=2.5</label></div>
+    <div class="row"><label class="chk"><input type="checkbox" id="mirror" checked> <span id="mirrorLabel">Mirror about z=2.5</span></label></div>
     <div class="row"><label for="snapStep">Snap grid:</label>
       <select id="snapStep">
         <option value="0.5" selected>0.5</option>
@@ -48,37 +57,68 @@
       </select>
     </div>
     <div class="row"><label class="chk"><input type="checkbox" id="labels"> Show vertex numbers</label></div>
-    <div class="row">
-      <button id="rCubic">Reset: cubic R_V6</button>
-      <button id="rShaped">Reset: 45° shaped</button>
+    <div class="row" id="resetRow">
+      <button id="rCubic">Reset: cubic</button>
+      <button id="rShaped">Reset: shaped</button>
     </div>
     <div class="row">
-      <button id="exp" class="primary">Export JSON</button>
+      <button id="exp" class="primary">Export all</button>
       <button id="cpy">Copy</button>
       <button id="load">Load</button>
     </div>
-    <textarea id="out" readonly placeholder="Exported [[z,y],...] appears here — send it to me, or paste one back and hit Load."></textarea>
-    <div class="hint">Export, then send me the JSON and I'll render the full clay 3D. Paste JSON back and hit Load to restore it.</div>
+    <textarea id="out" placeholder="Exported {w:.., t:.., c:..} appears here — send it to me, or paste one back and hit Load."></textarea>
+    <div class="hint">Export sends all three faces. I'll render the full clay 3D from it. Paste a previous export back and hit Load to restore.</div>
   </div>
 </div>
 <script>
 "use strict";
-// ---- data: [z,y] pairs ----
-const CUBIC = [[5,4],[5,5],[4,5],[4,4],[4,3],[4,2],[3,2],[3,3],[2,3],[2,2],[1,2],[1,3],[1,4],[1,5],[0,5],[0,4],[0,3],[0,2],[0,1],[1,1],[1,0],[2,0],[2,1],[3,1],[3,0],[4,0],[4,1],[5,1],[5,2],[5,3]];
-const SHAPED = [[2.5,1],[3,0.5],[3.5,0.5],[4,0.5],[4.5,1],[5,1.5],[5,2],[5,3],[5,4],[5,5],[4,5],[4,4],[4,2],[3.5,1.5],[3,2],[2.5,2.5],[2,2],[1.5,1.5],[1,2],[1,4],[1,5],[0,5],[0,4],[0,3],[0,2],[0,1.5],[0.5,1],[1,0.5],[1.5,0.5],[2,0.5]];
-let poly = SHAPED.map(p => p.slice());
+// ---- face definitions ----
+// W: right face (x=5), poly in (z,y), mirror z=2.5 (h-axis)
+// T: front face (z=5), poly in (x,y), no mirror default
+// C: top face (y=5), poly in (x,z), mirror z=2.5 (v-axis)
+const W_CUBIC = [[5,4],[5,5],[4,5],[4,4],[4,3],[4,2],[3,2],[3,3],[2,3],[2,2],[1,2],[1,3],[1,4],[1,5],[0,5],[0,4],[0,3],[0,2],[0,1],[1,1],[1,0],[2,0],[2,1],[3,1],[3,0],[4,0],[4,1],[5,1],[5,2],[5,3]];
+const W_SHAPED = [[2.5,1],[3,0.5],[3.5,0.5],[4,0.5],[4.5,1],[5,1.5],[5,2],[5,3],[5,4],[5,5],[4,5],[4,4],[4,2],[3.5,1.5],[3,2],[2.5,2.5],[2,2],[1.5,1.5],[1,2],[1,4],[1,5],[0,5],[0,4],[0,3],[0,2],[0,1.5],[0.5,1],[1,0.5],[1.5,0.5],[2,0.5]];
+const T_CUBIC = [[0,4],[2,4],[2,0],[3,0],[3,4],[4,4],[4,1],[5,1],[5,5],[0,5]];
+const C_CUBIC = [[0,5],[0,0],[5,0],[5,1],[1,1],[1,4],[5,4],[5,5]];
+const FACES = {
+  w: { label:'W', hAxis:'z', vAxis:'y', mirrorAxis:0, mirrorDefault:true,  mirrorName:'z=2.5',
+       cubic:W_CUBIC, shaped:W_SHAPED, poly:W_SHAPED.map(p=>p.slice()),
+       edTitle:'W — right face · z (0..5) →, y (0..5) ↑' },
+  t: { label:'T', hAxis:'x', vAxis:'y', mirrorAxis:0, mirrorDefault:false, mirrorName:'x=2.5',
+       cubic:T_CUBIC, shaped:null, poly:T_CUBIC.map(p=>p.slice()),
+       edTitle:'T — front face · x (0..5) →, y (0..5) ↑' },
+  c: { label:'C', hAxis:'x', vAxis:'z', mirrorAxis:1, mirrorDefault:true,  mirrorName:'z=2.5',
+       cubic:C_CUBIC, shaped:null, poly:C_CUBIC.map(p=>p.slice()),
+       edTitle:'C — top face · x (0..5) →, z (0..5) ↑' },
+};
+let cur = 'w';
+const face = () => FACES[cur];
+const poly = () => face().poly;
 
 const NS = 'http://www.w3.org/2000/svg';
 const ed = document.getElementById('ed');
 const pv = document.getElementById('pv');
-// 2D editor mapping: z 0..5 -> x 30..330 ; y 0..5 -> y 330..30 (y up)
 const X0=30, X1=330, Y0=330, Y1=30;
-const sx = z => X0 + (z/5)*(X1-X0);
-const sy = y => Y0 - (y/5)*(Y0-Y1);
+const sx = h => X0 + (h/5)*(X1-X0);
+const sy = v => Y0 - (v/5)*(Y0-Y1);
 const unx = x => Math.max(0, Math.min(5, ((x-X0)/(X1-X0))*5));
 const uny = y => Math.max(0, Math.min(5, ((Y0-y)/(Y0-Y1))*5));
 
-// ---- grid (redrawn when snap density changes) ----
+// ---- tabs ----
+for (const id of ['w','t','c']) {
+  document.getElementById('tab-'+id).onclick = () => {
+    if (cur === id) return;
+    cur = id;
+    for (const j of ['w','t','c']) document.getElementById('tab-'+j).classList.toggle('active', j===id);
+    document.getElementById('edTitle').textContent = face().edTitle;
+    document.getElementById('mirror').checked = face().mirrorDefault;
+    document.getElementById('mirrorLabel').textContent = 'Mirror about ' + face().mirrorName;
+    document.getElementById('rShaped').style.display = face().shaped ? '' : 'none';
+    drawGrid(); render2D(); render3D();
+  };
+}
+
+// ---- grid ----
 let gridG=null;
 function drawGrid(){
   if(gridG) ed.removeChild(gridG);
@@ -95,13 +135,16 @@ function drawGrid(){
     }
   }
   const cl=document.createElementNS(NS,'line');
-  cl.setAttribute('x1',sx(2.5));cl.setAttribute('y1',Y1);cl.setAttribute('x2',sx(2.5));cl.setAttribute('y2',Y0);
+  if (face().mirrorAxis===0) {
+    cl.setAttribute('x1',sx(2.5));cl.setAttribute('y1',Y1);cl.setAttribute('x2',sx(2.5));cl.setAttribute('y2',Y0);
+  } else {
+    cl.setAttribute('x1',X0);cl.setAttribute('y1',sy(2.5));cl.setAttribute('x2',X1);cl.setAttribute('y2',sy(2.5));
+  }
   cl.setAttribute('stroke','#d88');cl.setAttribute('stroke-dasharray','5,4');cl.setAttribute('stroke-width','1.5');
   g.appendChild(cl);
   ed.insertBefore(g, ed.firstChild);
   gridG=g;
 }
-drawGrid();
 
 const dyn = document.createElementNS(NS,'g'); ed.appendChild(dyn);
 const pgon = document.createElementNS(NS,'polygon');
@@ -111,9 +154,9 @@ dyn.appendChild(pgon);
 let handles=[], vlabels=[];
 
 function render2D(){
-  pgon.setAttribute('points', poly.map(p=>sx(p[0])+','+sy(p[1])).join(' '));
-  // sync handles
-  while(handles.length < poly.length){
+  const P = poly();
+  pgon.setAttribute('points', P.map(p=>sx(p[0])+','+sy(p[1])).join(' '));
+  while(handles.length < P.length){
     const c=document.createElementNS(NS,'circle');
     c.setAttribute('r','9'); c.setAttribute('fill','#d33');
     c.setAttribute('stroke','#fff'); c.setAttribute('stroke-width','2');
@@ -123,11 +166,11 @@ function render2D(){
     t.setAttribute('class','vlabel'); t.setAttribute('text-anchor','middle');
     t.style.display='none'; dyn.appendChild(t); vlabels.push(t);
   }
-  while(handles.length > poly.length){
+  while(handles.length > P.length){
     dyn.removeChild(handles.pop()); dyn.removeChild(vlabels.pop());
   }
   const showL = document.getElementById('labels').checked;
-  poly.forEach((p,i)=>{
+  P.forEach((p,i)=>{
     handles[i].setAttribute('cx',sx(p[0])); handles[i].setAttribute('cy',sy(p[1]));
     handles[i].dataset.i=i;
     vlabels[i].setAttribute('x',sx(p[0])); vlabels[i].setAttribute('y',sy(p[1])-13);
@@ -140,28 +183,26 @@ let dragI=-1, partner=-1, startedOnMid=false, splitDone=false;
 function snapStep(){ return parseFloat(document.getElementById('snapStep').value); }
 function snapV(v){ const s=snapStep(); return s>0 ? Math.round(v/s)*s : Math.round(v*100)/100; }
 function findPartner(i){
-  const p=poly[i], mz=5-p[0];
-  if(Math.abs(p[0]-2.5)<1e-9) return -1;
+  const P=poly(), ax=face().mirrorAxis, p=P[i], mz=5-p[ax];
+  if(Math.abs(p[ax]-2.5)<1e-9) return -1;
   let best=-1,bd=1e9;
-  for(let j=0;j<poly.length;j++){ if(j===i) continue;
-    const d=Math.abs(poly[j][0]-mz)+Math.abs(poly[j][1]-p[1]);
+  for(let j=0;j<P.length;j++){ if(j===i) continue;
+    const d=Math.abs(P[j][ax]-mz)+Math.abs(P[j][1-ax]-p[1-ax]);
     if(d<bd){bd=d;best=j;}
   }
-  return bd<0.26?best:-1; // only if a real symmetric partner exists
+  return bd<0.26?best:-1;
 }
 function toSVG(e){
   const pt=ed.createSVGPoint(); pt.x=e.clientX; pt.y=e.clientY;
   return pt.matrixTransform(ed.getScreenCTM().inverse());
 }
-handles0attach();
-function handles0attach(){ /* handles created in render2D; attach via delegation */ }
 ed.addEventListener('pointerdown', e=>{
   const t=e.target;
   if(t.tagName==='circle' && t.dataset.i!==undefined){
     dragI=parseInt(t.dataset.i);
     const mirOn=document.getElementById('mirror').checked;
     partner=mirOn?findPartner(dragI):-1;
-    startedOnMid=mirOn && Math.abs(poly[dragI][0]-2.5)<1e-9;
+    startedOnMid=mirOn && Math.abs(poly()[dragI][face().mirrorAxis]-2.5)<1e-9;
     splitDone=false;
     t.setPointerCapture(e.pointerId);
     e.preventDefault();
@@ -169,91 +210,105 @@ ed.addEventListener('pointerdown', e=>{
 });
 ed.addEventListener('pointermove', e=>{
   if(dragI<0) return;
+  const P=poly(), ax=face().mirrorAxis;
   const loc=toSVG(e);
-  let z=snapV(unx(loc.x)), y=snapV(uny(loc.y));
+  let h=snapV(unx(loc.x)), v=snapV(uny(loc.y));
   const mirOn=document.getElementById('mirror').checked;
   if(mirOn && startedOnMid && !splitDone){
-    if(Math.abs(z-2.5)>1e-9){
-      // pulled off the midline: the mid point stays, a new mirrored pair is born at the cursor
+    const cur_ax = ax===0?h:v;
+    if(Math.abs(cur_ax-2.5)>1e-9){
       const m=dragI;
-      poly.splice(m+1,0,[z,y],[snapV(5-z),y]);
+      const np1=[h,v], np2=[h,v];
+      np2[ax]=snapV(5-np1[ax]);
+      P.splice(m+1,0,np1,np2);
       dragI=m+1; partner=m+2; splitDone=true; startedOnMid=false;
     }else{
-      z=2.5; // still locked to the midline
-      poly[dragI]=[z,y];
+      if(ax===0) h=2.5; else v=2.5;
+      P[dragI]=[h,v];
     }
   }else{
-    poly[dragI]=[z,y];
-    if(mirOn && partner>=0) poly[partner]=[snapV(5-z),y];
+    P[dragI]=[h,v];
+    if(mirOn && partner>=0){
+      const q=P[partner].slice();
+      q[ax]=snapV(5-(ax===0?h:v));
+      q[1-ax]=(ax===0?v:h);
+      P[partner]=q;
+    }
   }
   render2D(); render3D();
 });
 function mergeCoincident(){
-  // points that joined (e.g. on the midline) collapse into one
-  const out=[];
-  for(const p of poly){
+  const P=poly(), out=[];
+  for(const p of P){
     if(!out.some(q=>Math.abs(q[0]-p[0])<1e-9 && Math.abs(q[1]-p[1])<1e-9)) out.push(p);
   }
-  if(out.length>=3) poly=out;
+  if(out.length>=3) face().poly=out;
 }
 ['pointerup','pointercancel'].forEach(ev=>ed.addEventListener(ev,()=>{
   if(dragI>=0){ mergeCoincident(); render2D(); render3D(); }
   dragI=-1;partner=-1;startedOnMid=false;splitDone=false;
 }));
-// double-click a handle to delete it (and its mirror partner, if any)
 ed.addEventListener('dblclick', e=>{
   const t=e.target;
   if(t.tagName==='circle' && t.dataset.i!==undefined){
-    const i=parseInt(t.dataset.i);
+    const i=parseInt(t.dataset.i), P=poly();
     const mirOn=document.getElementById('mirror').checked;
     const p=mirOn?findPartner(i):-1;
     const kill=[i]; if(p>=0) kill.push(p);
-    if(poly.length-kill.length<3) return;
-    kill.sort((a,b)=>b-a).forEach(k=>poly.splice(k,1));
+    if(P.length-kill.length<3) return;
+    kill.sort((a,b)=>b-a).forEach(k=>P.splice(k,1));
     dragI=-1;partner=-1;
     render2D();render3D();
   }
   e.preventDefault();
 });
 
-// ---- 3D iso preview ----
+// ---- 3D preview: all three faces ----
+// Each face is drawn as a flat polygon at its cube plane:
+//   W at x=5 (poly in (z,y)), T at z=5 (poly in (x,y)), C at y=5 (poly in (x,z)).
+const COS30=Math.cos(Math.PI/6), SIN30=Math.sin(Math.PI/6);
+const SH_Y='#d9a276', SH_Z='#c08355', SH_X='#9a653c';
+function to3(p, kind){
+  if(kind==='w') return [5, p[1], p[0]];
+  if(kind==='t') return [p[0], p[1], 5];
+  return [p[0], 5, p[1]];
+}
 function render3D(){
   while(pv.firstChild) pv.removeChild(pv.firstChild);
-  const cx=180, cy=190, s=34, c30=Math.cos(Math.PI/6), s30=Math.sin(Math.PI/6);
-  const P=(x,y,z)=>[cx+(z-2.5)*c30*s-(x-4.5)*c30*s, cy-(y-2.5)*s+((z-2.5)+(x-4.5))*s30*s*0.9];
-  const x0=4,x1=5,n=poly.length;
-  // side quads with painter sort (by avg x+y+z ascending -> draw far first)
-  const quads=[];
-  for(let i=0;i<n;i++){
-    const j=(i+1)%n, a=poly[i], b=poly[j];
-    const depth=(x0+a[1]+a[0]+x0+b[1]+b[0]+x1+b[1]+b[0]+x1+a[1]+a[0])/4;
-    quads.push({a,b,depth});
-  }
-  quads.sort((p,q)=>p.depth-q.depth);
-  for(const q of quads){
-    const p1=P(x0,q.a[1],q.a[0]),p2=P(x0,q.b[1],q.b[0]),p3=P(x1,q.b[1],q.b[0]),p4=P(x1,q.a[1],q.a[0]);
+  const cx=180, cy=195, s=34;
+  // SVG y-down: py = cy - (y - (x+z)*SIN30) * s
+  const P3=(x,y,z)=>[cx+(x-z)*COS30*s, cy-(y-(x+z)*SIN30)*s];
+  const faces=[
+    { pts:FACES.w.poly.map(p=>to3(p,'w')), fill:SH_X },
+    { pts:FACES.t.poly.map(p=>to3(p,'t')), fill:SH_Z },
+    { pts:FACES.c.poly.map(p=>to3(p,'c')), fill:SH_Y },
+  ];
+  // far (small x+y+z) first; top face last so shared edges read cleanly
+  const rank=f=>f.fill===SH_Y?1:0;
+  faces.sort((a,b)=>{
+    const da=a.pts.reduce((t,p)=>t+p[0]+p[1]+p[2],0)/a.pts.length;
+    const db=b.pts.reduce((t,p)=>t+p[0]+p[1]+p[2],0)/b.pts.length;
+    return (da-db) || (rank(a)-rank(b));
+  });
+  for(const f of faces){
     const el=document.createElementNS(NS,'polygon');
-    el.setAttribute('points',`${p1[0]},${p1[1]} ${p2[0]},${p2[1]} ${p3[0]},${p3[1]} ${p4[0]},${p4[1]}`);
-    // shade by edge direction: more vertical-in-z -> darker
-    const dz=Math.abs(q.b[0]-q.a[0]), dy=Math.abs(q.b[1]-q.a[1]);
-    const t=dz+dy>0?dz/(dz+dy):0.5;
-    const base=Math.round(150+40*(0.5-t));
-    el.setAttribute('fill',`rgb(${base+25},${base-15},${base-55})`);
-    el.setAttribute('stroke','#8B5E3C'); el.setAttribute('stroke-width','0.7');
+    el.setAttribute('points', f.pts.map(p=>{const q=P3(p[0],p[1],p[2]); return q[0].toFixed(1)+','+q[1].toFixed(1);}).join(' '));
+    el.setAttribute('fill', f.fill);
+    el.setAttribute('stroke','#8B5E3C'); el.setAttribute('stroke-width','1.4');
     pv.appendChild(el);
   }
-  const fc=document.createElementNS(NS,'polygon');
-  fc.setAttribute('points',poly.map(p=>{const q=P(x1,p[1],p[0]);return q[0]+','+q[1];}).join(' '));
-  fc.setAttribute('fill','#D8A066'); fc.setAttribute('stroke','#8B5E3C'); fc.setAttribute('stroke-width','1.2');
-  pv.appendChild(fc);
 }
 
 // ---- buttons ----
-document.getElementById('rCubic').onclick=()=>{poly=CUBIC.map(p=>p.slice());render2D();render3D();};
-document.getElementById('rShaped').onclick=()=>{poly=SHAPED.map(p=>p.slice());render2D();render3D();};
+document.getElementById('rCubic').onclick=()=>{face().poly=face().cubic.map(p=>p.slice());render2D();render3D();};
+document.getElementById('rShaped').onclick=()=>{if(face().shaped){face().poly=face().shaped.map(p=>p.slice());render2D();render3D();}};
 document.getElementById('labels').onchange=render2D;
+document.getElementById('mirror').onchange=()=>{drawGrid();};
+const rnd2 = v => Math.round(v*100)/100;
 document.getElementById('exp').onclick=()=>{
-  document.getElementById('out').value=JSON.stringify(poly.map(p=>[Math.round(p[0]*100)/100,Math.round(p[1]*100)/100]));
+  const o={};
+  for(const id of ['w','t','c']) o[id]=FACES[id].poly.map(p=>[rnd2(p[0]),rnd2(p[1])]);
+  document.getElementById('out').value=JSON.stringify(o);
 };
 document.getElementById('cpy').onclick=()=>{
   const t=document.getElementById('out'); t.select();
@@ -261,16 +316,34 @@ document.getElementById('cpy').onclick=()=>{
 };
 document.getElementById('load').onclick=()=>{
   let v; try{ v=JSON.parse(document.getElementById('out').value); }catch(err){ v=null; }
-  if(v && !Array.isArray(v) && Array.isArray(v.points)) v=v.points; // accept {"points":[...]} too
-  if(!Array.isArray(v)||v.length<3||!v.every(p=>Array.isArray(p)&&p.length===2&&p.every(n=>typeof n==='number'&&isFinite(n)))){
-    alert('Load needs JSON like [[z,y],[z,y],...] pasted in the text box.'); return;
+  const okArr=a=>Array.isArray(a)&&a.length>=3&&a.every(p=>Array.isArray(p)&&p.length===2&&p.every(n=>typeof n==='number'&&isFinite(n)));
+  if(v && !Array.isArray(v) && typeof v==='object'){
+    let any=false;
+    for(const id of ['w','t','c']){
+      if(okArr(v[id])){ FACES[id].poly=v[id].map(p=>[Math.max(0,Math.min(5,p[0])),Math.max(0,Math.min(5,p[1]))]); mergeInto(id); any=true; }
+    }
+    if(!any){ alert('Load needs {"w":[[..],..],"t":[[..],..],"c":[[..],..]} or a bare [[h,v],..] array.'); return; }
+  } else if(okArr(v)){
+    face().poly=v.map(p=>[Math.max(0,Math.min(5,p[0])),Math.max(0,Math.min(5,p[1]))]);
+    mergeCoincident();
+  } else {
+    alert('Load needs {"w":..,"t":..,"c":..} or [[h,v],[h,v],..] pasted in the text box.'); return;
   }
-  poly=v.map(p=>[Math.max(0,Math.min(5,p[0])),Math.max(0,Math.min(5,p[1]))]);
-  mergeCoincident(); render2D(); render3D();
+  render2D(); render3D();
 };
+function mergeInto(id){
+  const P=FACES[id].poly, out=[];
+  for(const p of P){ if(!out.some(q=>Math.abs(q[0]-p[0])<1e-9&&Math.abs(q[1]-p[1])<1e-9)) out.push(p); }
+  if(out.length>=3) FACES[id].poly=out;
+}
 document.getElementById('snapStep').onchange=drawGrid;
 
-render2D(); render3D();
+// init
+document.getElementById('edTitle').textContent = face().edTitle;
+document.getElementById('mirror').checked = face().mirrorDefault;
+document.getElementById('mirrorLabel').textContent = 'Mirror about ' + face().mirrorName;
+document.getElementById('rShaped').style.display = face().shaped ? '' : 'none';
+drawGrid(); render2D(); render3D();
 </script>
 </body>
 </html>
